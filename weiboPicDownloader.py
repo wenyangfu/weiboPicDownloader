@@ -80,6 +80,10 @@ parser.add_argument(
     '-o', dest = 'overwrite', action = 'store_true',
     help = 'overwrite existing files'
 )
+parser.add_argument(
+    '-B', dest = 'blacklist', action = 'store_true',
+    help = 'prevent certain files from being downloaded on a per-user basis'
+)
 
 def nargs_fit(parser, args):
     flags = parser._option_string_actions
@@ -132,6 +136,10 @@ def make_dir(path):
     except Exception as e:
         quit(str(e))
 
+def touch(path):
+    with open(path, 'a'):
+        os.utime(path, None)
+
 def confirm(message):
     while True:
         answer = input_fit('{} [Y/n] '.format(message)).strip()
@@ -160,6 +168,14 @@ def read_from_file(path):
             return [line.strip().decode(system_encoding) if is_python2 else line.strip() for line in f]
     except Exception as e:
         quit(str(e))
+
+def load_blacklist(path):
+    """
+    Blacklist will be formatted as raw filenames, such as 006cjkcOgy1ga1b6zb2olj32zk200b11.jpg
+    Assume no extra periods in filenames.
+    """
+    with open(path, 'r') as f:
+        return set(line.split('.')[0] for line in f)
 
 def nickname_to_uid(nickname):
     url = 'https://m.weibo.cn/n/{}'.format(nickname)
@@ -197,6 +213,15 @@ def parse_date(text):
     elif re.search(r'^[\d|-]+$', text):
         return datetime.datetime.strptime(((str(now.year) + '-') if not re.search(r'^\d{4}', text) else '') + text, '%Y-%m-%d').date()
 
+def get_blacklist_name(nickname, uid):
+    blacklist_dir = os.path.join(os.path.dirname(__file__), 'blacklist')
+    if not os.path.exists(blacklist_dir):
+        make_dir(blacklist_dir)
+    blacklist = f'{blacklist_dir}/{nickname}_{uid}.txt'
+    if not os.path.exists(blacklist):
+        touch(blacklist)
+    return blacklist
+
 def compare(standard, operation, candidate):
     for target in candidate:
         try:
@@ -208,7 +233,7 @@ def compare(standard, operation, candidate):
         except TypeError:
             pass
 
-def get_resources(uid, video, interval, limit):
+def get_resources(uid, video, interval, limit, blacklist=None):
     page = 1
     size = 25
     amount = 0
@@ -217,6 +242,8 @@ def get_resources(uid, video, interval, limit):
     aware = 1
     exceed = False
     resources = []
+
+    blacklisted_items = load_blacklist(blacklist) if blacklist else set()
 
     while empty < aware and not exceed:
         try:
@@ -233,6 +260,8 @@ def get_resources(uid, video, interval, limit):
             empty = empty + 1 if json_data['ok'] == 0 else 0
             if total == 0 and 'cardlistInfo' in json_data['data']: total = json_data['data']['cardlistInfo']['total']
             cards = json_data['data']['cards']
+            # with open('data.json', 'w') as f:
+            #     json.dump(cards, f)
             for card in cards:
                 if 'mblog' in card:
                     mblog = card['mblog']
@@ -245,7 +274,7 @@ def get_resources(uid, video, interval, limit):
                     if compare(limit[0], '>', [mid, date]) or compare(limit[1], '<', [mid, date]): continue
                     if 'pics' in mblog:
                         for index, pic in enumerate(mblog['pics'], 1):
-                            if 'large' in pic:
+                            if 'large' in pic and pic['pid'] not in blacklisted_items:
                                 resources.append(merge({'url': pic['large']['url'], 'index': index, 'type': 'photo'}, mark))
                     elif 'page_info' in mblog and video:
                         if 'media_info' in mblog['page_info']:
@@ -353,9 +382,10 @@ for number, user in enumerate(users, 1):
         continue
 
     print_fit('{} {}'.format(nickname, uid))
+    blacklist = get_blacklist_name(nickname, user) if args.blacklist else None
     
     try:
-        resources = get_resources(uid, args.video, args.interval, boundary)
+        resources = get_resources(uid, args.video, args.interval, boundary, blacklist)
     except KeyboardInterrupt:
         quit()
 
